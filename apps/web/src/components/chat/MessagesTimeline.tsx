@@ -208,6 +208,7 @@ import {
 import { TerminalContextInlineChip } from "./TerminalContextInlineChip";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { Spinner } from "../ui/spinner";
+import { ThreadFindBar } from "./ThreadFindBar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { WorktreeSetupCard } from "./WorktreeSetupCard";
 import {
@@ -1290,6 +1291,13 @@ export const MessagesTimeline = memo(function MessagesTimeline({
               onCite={onCiteAssistantText}
             />
           ) : null}
+          <ThreadFindBar
+            rows={rows}
+            listRef={listRef}
+            threadKey={listIdentityKey}
+            loadEarlier={loadEarlier}
+            onManualNavigation={onManualNavigation}
+          />
           <LegendList<MessagesTimelineRow>
             ref={listRef}
             data={rows}
