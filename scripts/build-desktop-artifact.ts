@@ -3612,10 +3612,20 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   const stageProdResourcesDir = path.join(stageAppDir, "apps/desktop/prod-resources");
   yield* fs.copy(stageResourcesDir, stageProdResourcesDir);
 
+  // Fork: passkeys need an Associated Domains profile that only T3's Apple team
+  // can issue, so a signed build without a profile signs with electron-builder's
+  // default entitlements and leaves in-app browser passkeys disabled.
+  const repoEnv = loadRepoEnv({ repoRoot });
+  const hasMacProvisioningProfile = Boolean(repoEnv.T3CODE_MACOS_PROVISIONING_PROFILE?.trim());
+  if (options.platform === "mac" && options.signed && !hasMacProvisioningProfile) {
+    yield* Effect.log(
+      "[desktop-artifact] No macOS provisioning profile; signing without passkey entitlements.",
+    );
+  }
   const configuredMacPasskeySigning =
-    options.platform === "mac" && options.signed
+    options.platform === "mac" && options.signed && hasMacProvisioningProfile
       ? yield* Effect.try({
-          try: () => resolveMacPasskeySigningConfiguration(loadRepoEnv({ repoRoot })),
+          try: () => resolveMacPasskeySigningConfiguration(repoEnv),
           catch: MacPasskeySigningConfigurationResolutionError.fromCause,
         })
       : undefined;
