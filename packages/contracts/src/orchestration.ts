@@ -1257,6 +1257,15 @@ const ThreadMetaUpdateCommand = Schema.Struct({
   ),
 );
 
+// Fork: moves a thread to another project. It continues from the project's
+// root, so its worktree and branch are cleared.
+const ThreadProjectMoveCommand = Schema.Struct({
+  type: Schema.Literal("thread.project.move"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  projectId: ProjectId,
+});
+
 const ThreadPullRequestLinkCommand = Schema.Struct({
   type: Schema.Literal("thread.pull-request.link"),
   commandId: CommandId,
@@ -1442,6 +1451,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadAutoSettleSetCommand,
   ThreadActiveReorderCommand,
   ThreadMetaUpdateCommand,
+  ThreadProjectMoveCommand,
   ThreadPullRequestLinkCommand,
   ThreadPullRequestUnlinkCommand,
   ThreadRuntimeModeSetCommand,
@@ -1476,6 +1486,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadAutoSettleSetCommand,
   ThreadActiveReorderCommand,
   ThreadMetaUpdateCommand,
+  ThreadProjectMoveCommand,
   ThreadPullRequestLinkCommand,
   ThreadPullRequestUnlinkCommand,
   ThreadRuntimeModeSetCommand,
@@ -1850,6 +1861,8 @@ export const ThreadAutoSettleSetPayload = Schema.Struct({
 
 export const ThreadMetaUpdatedPayload = Schema.Struct({
   threadId: ThreadId,
+  /** Fork: set by thread.project.move. */
+  projectId: Schema.optional(ProjectId),
   // Order updates use this existing event so older clients can ignore the
   // new field while continuing to decode the event stream.
   activeOrderKey: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),

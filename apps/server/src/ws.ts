@@ -1,3 +1,4 @@
+import * as NodeOS from "node:os";
 import {
   sameUsageLimitCommandCoverage,
   withUsageLimitsCommands,
@@ -49,6 +50,7 @@ import {
   OrchestrationGetTurnDiffError,
   ORCHESTRATION_WS_METHODS,
   ProjectId,
+  type ProjectCreateFromThreadInput,
   type ProjectCreateNewInput,
   type ProjectEntriesFailure,
   type ProjectFileFailure,
@@ -2063,6 +2065,103 @@ const makeWsRpcLayer = (
           };
         });
 
+      // Fork: a thread without a project becomes a project. Its Scratch folder
+      // (and whatever the agent wrote there) moves to the chosen path, a
+      // project is made from it, and the thread continues from the new root.
+      const createProjectFromThread = (input: ProjectCreateFromThreadInput) =>
+        Effect.gen(function* () {
+          const failure = (message: string, cause?: unknown) =>
+            new OrchestrationDispatchCommandError({
+              message,
+              ...(cause === undefined ? {} : { cause }),
+            });
+          const scratchRoot = yield* resolveScratchWorkspaceRoot;
+          const thread = yield* projectionSnapshotQuery
+            .getThreadShellById(input.threadId)
+            .pipe(Effect.mapError((cause) => failure("Failed to look up the thread.", cause)));
+          if (Option.isNone(thread)) return yield* failure("The thread no longer exists.");
+          const source = thread.value.worktreePath;
+          const relativeToScratch =
+            scratchRoot === undefined || source === null
+              ? null
+              : path.relative(scratchRoot, source);
+          if (
+            source === null ||
+            relativeToScratch === null ||
+            relativeToScratch === "" ||
+            relativeToScratch.startsWith("..") ||
+            path.isAbsolute(relativeToScratch)
+          ) {
+            return yield* failure("Only threads without a project can become a project.");
+          }
+          if (thread.value.session?.activeTurnId != null) {
+            return yield* failure("Stop the running turn before making the thread a project.");
+          }
+          const requested = input.workspaceRoot.startsWith("~/")
+            ? path.join(NodeOS.homedir(), input.workspaceRoot.slice(2))
+            : input.workspaceRoot;
+          if (!path.isAbsolute(requested)) {
+            return yield* failure("Choose an absolute path for the project folder.");
+          }
+          const destination = path.resolve(requested);
+          if (yield* fileSystem.exists(destination).pipe(Effect.orElseSucceed(() => true))) {
+            return yield* failure(`${destination} already exists. Choose a new folder.`);
+          }
+          yield* fileSystem
+            .makeDirectory(path.dirname(destination), { recursive: true })
+            .pipe(
+              Effect.mapError((cause) => failure("Failed to create the parent folder.", cause)),
+            );
+          // A rename fails across volumes; copying and removing covers that.
+          const moveFolder = (from: string, to: string) =>
+            fileSystem
+              .rename(from, to)
+              .pipe(
+                Effect.catch(() =>
+                  fileSystem
+                    .copy(from, to)
+                    .pipe(Effect.andThen(fileSystem.remove(from, { recursive: true }))),
+                ),
+              );
+          yield* moveFolder(source, destination).pipe(
+            Effect.mapError((cause) => failure("Failed to move the thread's folder.", cause)),
+          );
+          const restoreFolder = moveFolder(destination, source).pipe(Effect.ignore);
+          const projectId = ProjectId.make(yield* randomUUID);
+          yield* Effect.gen(function* () {
+            const createProject = yield* normalizeDispatchCommand({
+              type: "project.create",
+              commandId: yield* serverCommandId("project-create-from-thread"),
+              projectId,
+              title: input.title,
+              workspaceRoot: destination,
+              createdAt: yield* nowIso,
+            });
+            yield* dispatchNormalizedCommand(createProject);
+          }).pipe(Effect.tapError(() => restoreFolder));
+          yield* Effect.gen(function* () {
+            const moveThread = yield* normalizeDispatchCommand({
+              type: "thread.project.move",
+              commandId: yield* serverCommandId("thread-project-move"),
+              threadId: input.threadId,
+              projectId,
+            });
+            yield* dispatchNormalizedCommand(moveThread);
+          }).pipe(
+            Effect.tapError(() =>
+              Effect.gen(function* () {
+                const deleteProject = yield* normalizeDispatchCommand({
+                  type: "project.delete",
+                  commandId: yield* serverCommandId("project-create-from-thread-undo"),
+                  projectId,
+                });
+                yield* dispatchNormalizedCommand(deleteProject);
+              }).pipe(Effect.ignore, Effect.andThen(restoreFolder)),
+            ),
+          );
+          return { projectId, workspaceRoot: destination };
+        });
+
       // Only clients that answer /usage-limits themselves see it in the catalogs;
       // an older client would send the injected command to the provider.
       const loadServerConfig = (options: { readonly usageLimitsCommand: boolean }) =>
@@ -3300,6 +3399,10 @@ const makeWsRpcLayer = (
           }),
         [WS_METHODS.projectsCreateNew]: (input) =>
           observeRpcEffect(WS_METHODS.projectsCreateNew, createNewProject(input), {
+            "rpc.aggregate": "orchestration",
+          }),
+        [WS_METHODS.projectsCreateFromThread]: (input) =>
+          observeRpcEffect(WS_METHODS.projectsCreateFromThread, createProjectFromThread(input), {
             "rpc.aggregate": "orchestration",
           }),
         [WS_METHODS.projectCloneCancel]: (input) =>

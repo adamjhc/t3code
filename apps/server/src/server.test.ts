@@ -5615,6 +5615,76 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect("fork: turns a thread without a project into a project at the chosen folder", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const dispatched: Array<{ readonly type: string; readonly projectId?: string }> = [];
+      let threadFolder = "";
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            dispatch: (command) =>
+              Effect.sync(() => {
+                dispatched.push({
+                  type: command.type,
+                  ...("projectId" in command ? { projectId: command.projectId } : {}),
+                });
+                return { sequence: dispatched.length };
+              }),
+          },
+          projectionSnapshotQuery: {
+            getThreadShellById: (threadId) =>
+              Effect.succeedSome({
+                ...makeDefaultOrchestrationThreadShell(),
+                id: threadId,
+                worktreePath: threadFolder,
+              }),
+          },
+        },
+      });
+
+      yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          Effect.gen(function* () {
+            const scratchRoot =
+              (yield* client[WS_METHODS.serverGetConfig]({})).scratchWorkspaceRoot ?? "";
+            threadFolder = path.join(scratchRoot, "2026-01-01-pinball-idea-abc");
+            yield* fileSystem.makeDirectory(threadFolder, { recursive: true });
+            yield* fileSystem.writeFileString(path.join(threadFolder, "notes.md"), "flippers");
+            const destination = path.join(path.dirname(scratchRoot), "promoted", "pinball");
+
+            const result = yield* client[WS_METHODS.projectsCreateFromThread]({
+              threadId: defaultThreadId,
+              title: "Pinball",
+              workspaceRoot: destination,
+            });
+
+            assert.equal(result.workspaceRoot, destination);
+            assert.equal(
+              yield* fileSystem.readFileString(path.join(destination, "notes.md")),
+              "flippers",
+            );
+            assert.isFalse(yield* fileSystem.exists(threadFolder));
+            assert.deepEqual(dispatched, [
+              { type: "project.create", projectId: result.projectId },
+              { type: "thread.project.move", projectId: result.projectId },
+            ]);
+
+            const taken = yield* Effect.flip(
+              client[WS_METHODS.projectsCreateFromThread]({
+                threadId: defaultThreadId,
+                title: "Pinball",
+                workspaceRoot: destination,
+              }),
+            );
+            assert.include(String(taken.message), "already exists");
+          }),
+        ),
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("advertises the usable file manager and its reveal label", () =>
     Effect.gen(function* () {
       yield* buildAppUnderTest({

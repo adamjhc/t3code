@@ -3,6 +3,7 @@ import {
   NonNegativeInt,
   PositiveInt,
   ProjectId,
+  ThreadId,
   TrimmedNonEmptyString,
   TrimmedString,
 } from "./baseSchemas.ts";
@@ -301,6 +302,23 @@ export const ProjectCreateNewResult = Schema.Struct({
   commitError: Schema.optionalKey(TrimmedNonEmptyString),
 });
 export type ProjectCreateNewResult = typeof ProjectCreateNewResult.Type;
+
+/**
+ * Fork: turns a thread without a project into a project. Its folder moves to
+ * `workspaceRoot`, which must not exist yet, and the thread continues there.
+ */
+export const ProjectCreateFromThreadInput = Schema.Struct({
+  threadId: ThreadId,
+  title: TrimmedNonEmptyString.check(Schema.isMaxLength(200)),
+  workspaceRoot: TrimmedNonEmptyString,
+});
+export type ProjectCreateFromThreadInput = typeof ProjectCreateFromThreadInput.Type;
+
+export const ProjectCreateFromThreadResult = Schema.Struct({
+  projectId: ProjectId,
+  workspaceRoot: TrimmedNonEmptyString,
+});
+export type ProjectCreateFromThreadResult = typeof ProjectCreateFromThreadResult.Type;
 
 export class ProjectWriteFileError extends Schema.TaggedError<ProjectWriteFileError>()(
   "ProjectWriteFileError",
