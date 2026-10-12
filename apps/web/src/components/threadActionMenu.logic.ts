@@ -10,6 +10,9 @@ export type ThreadActionMenuId =
   | "new-thread-on-branch"
   | "filter-by-project"
   | "project-settings"
+  | "make-project"
+  | "move-to-project"
+  | `move-to-project:${string}`
   | "pin"
   | "unpin"
   | "settle"
@@ -40,6 +43,13 @@ export interface ThreadActionMenuState {
     readonly label: string;
     /** True when the list is already scoped to this thread's project. */
     readonly isActive: boolean;
+  } | null;
+  /**
+   * Fork: set for threads without a project. `targets` are the projects on
+   * the thread's machine it can move into.
+   */
+  readonly projectMove?: {
+    readonly targets: ReadonlyArray<{ readonly id: string; readonly label: string }>;
   } | null;
   readonly isPinned: boolean;
   readonly isSettled: boolean;
@@ -176,6 +186,27 @@ export function buildThreadActionMenuItems(
         { id: "copy-thread-id", label: "Thread ID", icon: "hash" },
       ],
     },
+    ...(state.projectMove
+      ? [
+          {
+            id: "make-project" as const,
+            label: "Make into project…",
+            icon: "folder",
+            disabled: state.isRunning,
+            separatorBefore: true,
+          },
+          {
+            id: "move-to-project" as const,
+            label: "Move to project",
+            icon: "folder-tree",
+            disabled: state.isRunning || state.projectMove.targets.length === 0,
+            children: state.projectMove.targets.map((target) => ({
+              id: `move-to-project:${target.id}` as const,
+              label: target.label,
+            })),
+          },
+        ]
+      : []),
     { id: "project-settings", label: "Project settings", icon: "settings" },
     // Archive removes the thread from the sidebar while keeping its
     // conversation under Settings > Archived threads — distinct from Settle

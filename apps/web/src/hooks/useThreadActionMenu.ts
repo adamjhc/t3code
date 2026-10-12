@@ -41,6 +41,7 @@ import { useCopyToClipboard } from "./useCopyToClipboard";
 import { useNewThreadHandler } from "./useHandleNewThread";
 import { useClientSettings } from "./useSettings";
 import { useThreadActions } from "./useThreadActions";
+import { useThreadProjectMove } from "./useThreadProjectMove";
 
 function failureToast(title: string, error: unknown) {
   toastManager.add(
@@ -97,6 +98,7 @@ export function useThreadActionMenu(input: {
     reportFailure: false,
   });
   const handleNewThread = useNewThreadHandler();
+  const { projectMoveFor, handleProjectMoveAction } = useThreadProjectMove();
   const markThreadUnread = useUiStateStore((s) => s.markThreadUnread);
   const confirmThreadDelete = useClientSettings((s) => s.confirmThreadDelete);
   const confirmThreadArchive = useClientSettings((s) => s.confirmThreadArchive);
@@ -146,6 +148,7 @@ export function useThreadActionMenu(input: {
           // The chat header has no project-scoped thread list behind the
           // menu, so the "Filter by project" affordance is sidebar-only.
           projectFilter: null,
+          projectMove: projectMoveFor(thread),
           isPinned: thread.pinnedAt != null,
           isSettled: supports.settlement && thread.settledOverride === "settled",
           autoSettleEnabled: thread.autoSettleDisabledAt == null,
@@ -171,6 +174,7 @@ export function useThreadActionMenu(input: {
           }
           return;
         }
+        if (await handleProjectMoveAction(action, threadRef, thread)) return;
         const reportFailure = async (
           title: string,
           run: () => Promise<AtomCommandResult<unknown, unknown>>,
@@ -335,12 +339,14 @@ export function useThreadActionMenu(input: {
       copyThreadIdToClipboard,
       deleteThread,
       handleNewThread,
+      handleProjectMoveAction,
       logicalProjectKeyByPhysicalKey,
       markThreadUnread,
       onStartRename,
       pinThread,
       projectCwd,
       projectGroupingSettings,
+      projectMoveFor,
       projects,
       router,
       setThreadAutoSettle,

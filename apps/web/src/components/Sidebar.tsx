@@ -155,6 +155,7 @@ import { cn } from "~/lib/utils";
 import { EnvironmentMachineIcon } from "./EnvironmentMachineIcon";
 import { ProjectEnvironmentBadge } from "./ProjectEnvironmentBadge";
 import { buildThreadActionMenuItems } from "./threadActionMenu.logic";
+import { useThreadProjectMove } from "../hooks/useThreadProjectMove";
 import {
   animateSidebarLayoutChanges,
   applySidebarThreadDrop,
@@ -2241,6 +2242,7 @@ export default function Sidebar() {
     archiveThread,
     deleteThread,
   } = useThreadActions();
+  const { projectMoveFor, handleProjectMoveAction } = useThreadProjectMove();
   const updateThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
@@ -4226,6 +4228,7 @@ export default function Sidebar() {
                     isActive: projectScopeKey === threadProjectGroup.projectKey,
                   }
                 : null,
+              projectMove: projectMoveFor(thread),
               isPinned,
               isSettled,
               autoSettleEnabled: thread.autoSettleDisabledAt == null,
@@ -4247,6 +4250,9 @@ export default function Sidebar() {
           ),
         );
         if (clicked._tag === "Failure") return;
+        if (clicked.value && (await handleProjectMoveAction(clicked.value, threadRef, thread))) {
+          return;
+        }
         if (clicked.value?.startsWith("snooze:")) {
           const preset =
             clicked.value === "snooze:custom"
@@ -4446,8 +4452,10 @@ export default function Sidebar() {
       copyThreadIdToClipboard,
       deleteThread,
       handleMultiSelectContextMenu,
+      handleProjectMoveAction,
       markThreadUnread,
       openProjectSettings,
+      projectMoveFor,
       projectScopeKey,
       projectByKey,
       serverConfigs,

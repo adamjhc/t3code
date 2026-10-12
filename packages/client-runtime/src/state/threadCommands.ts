@@ -37,6 +37,7 @@ import {
   type UnarchiveThreadInput,
   type UnlinkThreadPullRequestInput,
   type UnpinThreadInput,
+  type MoveThreadToProjectInput,
   type UnsettleThreadInput,
   type UnsnoozeThreadInput,
   type UpdateThreadMetadataInput,
@@ -62,6 +63,7 @@ import {
   unarchiveThread,
   unlinkThreadPullRequest,
   unpinThread,
+  moveThreadToProject,
   unsettleThread,
   unsnoozeThread,
   updateThreadMetadata,
@@ -91,6 +93,7 @@ export type {
   UnarchiveThreadInput,
   UnlinkThreadPullRequestInput,
   UnpinThreadInput,
+  MoveThreadToProjectInput,
   UnsettleThreadInput,
   UnsnoozeThreadInput,
   UpdateThreadMetadataInput,
@@ -164,6 +167,13 @@ export function createThreadEnvironmentAtoms<R, E>(
     unpin: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:unpin",
       execute: (input: UnpinThreadInput) => unpinThread(input),
+      scheduler,
+      concurrency,
+    }),
+    // Fork: continues the thread in another project's root.
+    moveToProject: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:thread:move-to-project",
+      execute: (input: MoveThreadToProjectInput) => moveThreadToProject(input),
       scheduler,
       concurrency,
     }),

@@ -167,3 +167,35 @@ describe("buildThreadActionMenuItems", () => {
     expect(archiveItem?.disabled).toBe(true);
   });
 });
+
+describe("fork: project move items", () => {
+  const targets = [
+    { id: "p1", label: "Pinball" },
+    { id: "p2", label: "Sail" },
+  ];
+
+  it("offers making a project and moving into each project for threads without one", () => {
+    const items = buildThreadActionMenuItems({ ...baseState, projectMove: { targets } });
+    expect(items.find((item) => item.id === "make-project")).toMatchObject({ disabled: false });
+    expect(
+      items.find((item) => item.id === "move-to-project")?.children?.map((item) => item.id),
+    ).toEqual(["move-to-project:p1", "move-to-project:p2"]);
+  });
+
+  it("hides both for threads that already have a project", () => {
+    expect(allIds({ ...baseState, projectMove: null })).not.toContain("make-project");
+    expect(allIds(baseState)).not.toContain("move-to-project");
+  });
+
+  it("disables both while a turn runs, and moving when there is nowhere to go", () => {
+    const running = buildThreadActionMenuItems({
+      ...baseState,
+      isRunning: true,
+      projectMove: { targets },
+    });
+    expect(running.find((item) => item.id === "make-project")?.disabled).toBe(true);
+    expect(running.find((item) => item.id === "move-to-project")?.disabled).toBe(true);
+    const empty = buildThreadActionMenuItems({ ...baseState, projectMove: { targets: [] } });
+    expect(empty.find((item) => item.id === "move-to-project")?.disabled).toBe(true);
+  });
+});

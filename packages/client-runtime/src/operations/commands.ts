@@ -41,6 +41,7 @@ export type SnoozeThreadInput = CommandInput<"thread.snooze">;
 export type UnsnoozeThreadInput = CommandInput<"thread.unsnooze">;
 export type PinThreadInput = CommandInput<"thread.pin">;
 export type UnpinThreadInput = CommandInput<"thread.unpin">;
+export type MoveThreadToProjectInput = CommandInput<"thread.project.move">;
 export type ReorderPinnedThreadInput = CommandInput<"thread.pin.reorder">;
 export type SetThreadAutoSettleInput = CommandInput<"thread.auto-settle.set">;
 export type ReorderActiveThreadInput = CommandInput<"thread.active.reorder">;
@@ -223,6 +224,16 @@ export const unpinThread: (input: UnpinThreadInput) => CommandEffect = Effect.fn
   return yield* dispatch({
     ...input,
     type: "thread.unpin",
+    commandId: yield* commandId(input),
+  });
+});
+
+export const moveThreadToProject: (input: MoveThreadToProjectInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.moveThreadToProject",
+)(function* (input) {
+  return yield* dispatch({
+    ...input,
+    type: "thread.project.move",
     commandId: yield* commandId(input),
   });
 });
