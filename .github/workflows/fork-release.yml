@@ -1,0 +1,350 @@
+name: Fork release
+
+# Rebuilds this fork whenever pingdotgg/t3code publishes a new stable release:
+# rebases the `patched` branch onto the upstream tag, builds a signed and
+# notarized macOS arm64 app, and publishes it as `fork-<tag>`. The app's update
+# feed points at this repository, so installs update from these releases.
+# Nightly and preview releases are ignored. See FORK.md.
+
+on:
+  schedule:
+    # Avoid minute zero, when GitHub scheduled jobs are busiest.
+    - cron: "23 * * * *"
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: "Upstream stable tag to build (for example v0.0.45). Defaults to upstream's latest stable release."
+        required: false
+        type: string
+      rebuild:
+        description: "Replace the fork release if it already exists (for shipping a new patch on the same upstream version)."
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: fork-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  UPSTREAM_REPOSITORY: pingdotgg/t3code
+  PATCH_BRANCH: patched
+  WORKFLOW_PATH: .github/workflows/fork-release.yml
+
+jobs:
+  sync:
+    name: Rebase onto upstream release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      # Disables upstream's workflows, which cannot run here. Pushes use
+      # FORK_SYNC_TOKEN because GITHUB_TOKEN may not push workflow file changes.
+      actions: write
+      contents: read
+    outputs:
+      build: ${{ steps.resolve.outputs.build }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.resolve.outputs.version }}
+      sha: ${{ steps.rebase.outputs.sha }}
+    steps:
+      - name: Resolve upstream release
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ inputs.upstream_tag }}
+          REBUILD: ${{ inputs.rebuild }}
+        run: |
+          set -euo pipefail
+          # releases/latest never returns a prerelease, so nightlies and previews are skipped.
+          tag="${INPUT_TAG:-$(gh api "repos/$UPSTREAM_REPOSITORY/releases/latest" --jq .tag_name)}"
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::$tag is not a stable release tag."
+            exit 1
+          fi
+          build=true
+          if gh release view "fork-$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            if [[ "$REBUILD" == "true" ]]; then
+              echo "fork-$tag exists; rebuilding."
+            else
+              echo "fork-$tag is already published."
+              build=false
+            fi
+          fi
+          {
+            echo "tag=$tag"
+            echo "version=${tag#v}"
+            echo "build=$build"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Rebase patches
+        id: rebase
+        if: steps.resolve.outputs.build == 'true'
+        env:
+          TAG: ${{ steps.resolve.outputs.tag }}
+          SYNC_TOKEN: ${{ secrets.FORK_SYNC_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$SYNC_TOKEN" ]]; then
+            echo "::error::FORK_SYNC_TOKEN is not set. See FORK.md."
+            exit 1
+          fi
+          git init -q .
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git config advice.detachedHead false
+          git remote add origin "https://x-access-token:${SYNC_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git remote add upstream "https://github.com/${UPSTREAM_REPOSITORY}.git"
+          # Blobless: the rebase only needs the trees and blobs it touches.
+          git fetch -q --filter=blob:none --no-tags origin "$PATCH_BRANCH"
+          git fetch -q --filter=blob:none --no-tags upstream 'refs/tags/v*:refs/tags/v*'
+          # Upstream vendors reference repos under .repos as orphaned gitlinks.
+          git sparse-checkout set --no-cone '/*' '!/.repos/'
+          git checkout -q -B "$PATCH_BRANCH" "origin/$PATCH_BRANCH"
+          original_sha="$(git rev-parse HEAD)"
+
+          # The newest stable upstream tag in the branch's history is its base.
+          base="$(git describe --tags --abbrev=0 --match 'v[0-9]*' --exclude '*-*' HEAD)"
+          echo "Patch branch is based on $base; target is $TAG."
+          if [[ "$base" != "$TAG" ]]; then
+            if ! git rebase --onto "$TAG" "$base"; then
+              {
+                echo "### Rebase of \`$PATCH_BRANCH\` onto \`$TAG\` failed"
+                echo
+                echo "Conflicting files:"
+                git diff --name-only --diff-filter=U | sed 's/^/- /'
+                echo
+                echo "Resolve locally (see FORK.md), push \`$PATCH_BRANCH\`, then rerun this workflow."
+              } >> "$GITHUB_STEP_SUMMARY"
+              git rebase --abort
+              echo "::error::Rebase onto $TAG has conflicts. See the job summary."
+              exit 1
+            fi
+            git push --force-with-lease="$PATCH_BRANCH:$original_sha" origin "HEAD:$PATCH_BRANCH"
+          fi
+
+          {
+            echo "### Patches on \`$TAG\`"
+            git log --reverse --format='- %s' "$TAG..HEAD"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      # Upstream's workflows target its own runners and secrets. GitHub enables
+      # newly added workflow files, so turn off everything but this one after
+      # every sync and cancel anything the push started.
+      - name: Disable upstream workflows
+        if: always() && steps.resolve.outputs.build == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sleep 15
+          gh api "repos/$GITHUB_REPOSITORY/actions/workflows" --paginate \
+            --jq '.workflows[] | select(.state == "active" and (.path | startswith(".github/workflows/")) and .path != env.WORKFLOW_PATH) | "\(.id) \(.path)"' |
+            while read -r id path; do
+              echo "Disabling $path"
+              gh api -X PUT "repos/$GITHUB_REPOSITORY/actions/workflows/$id/disable"
+            done
+          for status in queued in_progress waiting pending requested; do
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs?status=$status&per_page=100" \
+              --jq '.workflow_runs[] | select(.path != env.WORKFLOW_PATH) | .id' |
+              while read -r run_id; do
+                echo "Cancelling run $run_id"
+                gh api -X POST "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/cancel" || true
+              done
+          done
+
+  bundle:
+    name: Build JS bundle
+    needs: sync
+    if: needs.sync.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # Upstream's public client configuration, the same values its stable builds embed.
+      T3CODE_CLERK_PUBLISHABLE_KEY: ${{ vars.CLERK_PUBLISHABLE_KEY || 'pk_live_Y2xlcmsudDMuY29kZXMk' }}
+      T3CODE_CLERK_JWT_TEMPLATE: ${{ vars.CLERK_JWT_TEMPLATE || 't3-relay' }}
+      T3CODE_CLERK_CLI_OAUTH_CLIENT_ID: ${{ vars.CLERK_CLI_OAUTH_CLIENT_ID || 'hzxSgY2cH10sDU2r' }}
+      T3CODE_RELAY_URL: ${{ vars.RELAY_URL || 'https://relay.t3.codes' }}
+    steps:
+      - name: Checkout
+        env:
+          SHA: ${{ needs.sync.outputs.sha }}
+        run: |
+          set -euo pipefail
+          git init -q .
+          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          git fetch -q --no-tags --depth=1 origin "$SHA"
+          git sparse-checkout set --no-cone '/*' '!/.repos/'
+          git -c advice.detachedHead=false checkout -q --detach FETCH_HEAD
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: false
+
+      - name: Install bundle dependencies
+        run: vp install --filter=t3... --filter=@t3tools/web... --filter=@t3tools/desktop... --filter=@t3tools/scripts...
+
+      - name: Align package versions to release version
+        run: node scripts/update-release-package-versions.ts "${{ needs.sync.outputs.version }}"
+
+      # @t3tools/desktop#build compiles the Linux browser secret helper, which needs libsecret.
+      - name: Install browser secret helper build libraries
+        run: sudo apt-get update && sudo apt-get install -y libsecret-1-dev pkg-config
+
+      - name: Build JS bundle
+        run: vp run build:desktop
+
+      - name: Upload JS bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: js-bundle
+          path: |
+            apps/server/dist
+            apps/desktop/dist-electron
+          if-no-files-found: error
+          retention-days: 1
+
+  mac:
+    name: Build and publish macOS arm64
+    needs: [sync, bundle]
+    runs-on: macos-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.sync.outputs.version }}
+      TAG: ${{ needs.sync.outputs.tag }}
+      SHA: ${{ needs.sync.outputs.sha }}
+    steps:
+      - name: Checkout
+        run: |
+          set -euo pipefail
+          git init -q .
+          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          git fetch -q --no-tags --depth=1 origin "$SHA"
+          git sparse-checkout set --no-cone '/*' '!/.repos/'
+          git -c advice.detachedHead=false checkout -q --detach FETCH_HEAD
+
+      - name: Check signing secrets
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          # Squirrel.Mac only installs updates signed by the same identity, so
+          # an unsigned build must never be published.
+          missing=()
+          for name in CSC_LINK CSC_KEY_PASSWORD APPLE_API_KEY APPLE_API_KEY_ID APPLE_API_ISSUER; do
+            [[ -n "${!name}" ]] || missing+=("$name")
+          done
+          if (( ${#missing[@]} )); then
+            echo "::error::Missing signing secrets: ${missing[*]}. See FORK.md."
+            exit 1
+          fi
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: false
+
+      - name: Install desktop dependencies
+        run: vp install --filter=@t3tools/desktop... --filter=t3... --filter=@t3tools/scripts...
+
+      - name: Cache resource monitor
+        id: resource_monitor_cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: native/resource-monitor/target/aarch64-apple-darwin/release/t3-resource-monitor
+          key: resource-monitor-aarch64-apple-darwin-${{ hashFiles('native/resource-monitor/Cargo.lock', 'native/resource-monitor/Cargo.toml', 'native/resource-monitor/src/**') }}
+
+      - name: Setup Rust
+        if: steps.resource_monitor_cache.outputs.cache-hit != 'true'
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+          targets: aarch64-apple-darwin
+
+      - name: Align package versions to release version
+        run: node scripts/update-release-package-versions.ts "$VERSION"
+
+      - name: Download JS bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: js-bundle
+          path: apps
+
+      - name: Build signed desktop artifact
+        env:
+          T3CODE_DESKTOP_REUSE_RESOURCE_MONITOR: ${{ steps.resource_monitor_cache.outputs.cache-hit == 'true' }}
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          set -euo pipefail
+          key_path="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+          printf '%s' "$APPLE_API_KEY" > "$key_path"
+          export APPLE_API_KEY="$key_path"
+          # GITHUB_REPOSITORY points the app's update feed at this fork.
+          vp run dist:desktop:artifact \
+            --platform mac \
+            --target dmg \
+            --arch arm64 \
+            --build-version "$VERSION" \
+            --skip-build \
+            --signed \
+            --verbose
+
+      # Checks the app inside the zip, which is the payload the updater installs.
+      - name: Verify signature and notarization
+        run: |
+          set -euo pipefail
+          zip="$(find release -maxdepth 1 -name '*.zip' | head -n 1)"
+          verify_dir="$RUNNER_TEMP/verify"
+          mkdir -p "$verify_dir"
+          ditto -x -k "$zip" "$verify_dir"
+          app="$(find "$verify_dir" -maxdepth 1 -name '*.app' | head -n 1)"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          spctl --assess --type execute --verbose=2 "$app"
+          xcrun stapler validate "$app"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          REBUILD: ${{ inputs.rebuild }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          assets=(release/*.dmg release/*.zip release/*.blockmap release/latest-mac.yml)
+          if [[ ! -f release/latest-mac.yml ]]; then
+            echo "::error::release/latest-mac.yml is missing, so installs could not update to this build."
+            exit 1
+          fi
+          release="fork-$TAG"
+          if gh release view "$release" >/dev/null 2>&1; then
+            if [[ "$REBUILD" != "true" ]]; then
+              echo "::error::$release already exists."
+              exit 1
+            fi
+            gh release delete "$release" --yes --cleanup-tag
+          fi
+          notes="$(printf 'T3 Code %s with the patches on the [`%s`](%s/%s/tree/%s) branch at %s.\n\nUpstream release notes: https://github.com/%s/releases/tag/%s\n' \
+            "$VERSION" "$PATCH_BRANCH" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$PATCH_BRANCH" "$SHA" "$UPSTREAM_REPOSITORY" "$TAG")"
+          gh release create "$release" \
+            --target "$SHA" \
+            --title "T3 Code $VERSION (fork)" \
+            --notes "$notes" \
+            --latest \
+            "${assets[@]}"
