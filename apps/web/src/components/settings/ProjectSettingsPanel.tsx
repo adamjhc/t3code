@@ -39,6 +39,7 @@ import {
   canPickExternalProjectFavicon,
   ProjectFaviconPickerDialog,
 } from "./ProjectFaviconPickerDialog";
+import { ChangeProjectFolderButton } from "./ChangeProjectFolderButton";
 import { ProjectActionsSettings } from "./ProjectActionsSettings";
 import { ProjectDefaultsSettings } from "./ProjectDefaultsSettings";
 import { projectGroupTitleNeedsUpdate } from "./ProjectSettingsPanel.logic";
@@ -392,14 +393,17 @@ function ProjectDetail({
           title={member.environmentLabel ?? "Environment"}
           description={member.workspaceRoot}
           control={
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => void removeMembers([member])}
-              aria-label={`Remove checkout ${member.workspaceRoot}`}
-            >
-              Remove
-            </Button>
+            <div className="flex items-center gap-2">
+              <ChangeProjectFolderButton member={member} />
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => void removeMembers([member])}
+                aria-label={`Remove checkout ${member.workspaceRoot}`}
+              >
+                Remove
+              </Button>
+            </div>
           }
         />
       ))}
