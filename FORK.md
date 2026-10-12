@@ -6,23 +6,25 @@ plus the fork's commits.
 
 ## How releases happen
 
-`.github/workflows/fork-release.yml` runs hourly. When `pingdotgg/t3code`
-publishes a new stable release (nightlies and previews are ignored), it:
+`.github/workflows/fork-release.yml` builds releases versioned
+`<upstream>-fork.<n>`, for example `0.0.45-fork.2`, tagged `v0.0.45-fork.2`.
+Each run:
 
-1. Rebases the fork's commits onto the new tag and force-pushes `patched`.
+1. Rebases the fork's commits onto upstream's latest stable tag (nightlies and
+   previews are ignored) and force-pushes `patched`.
 2. Builds the JS bundle, then a signed, notarized macOS arm64 app.
-3. Publishes the GitHub release `fork-<tag>` with the DMG, the zip, and
-   `latest-mac.yml`.
+3. Publishes a GitHub release with the DMG, the zip, and `latest-mac.yml`.
 
-The app's update feed points at this repository, so an installed fork build
-offers each new `fork-*` release through the normal in-app update button.
+It runs hourly and releases `-fork.1` once per new upstream stable release.
+Running it by hand always releases the next number, so a patch can ship
+without waiting for upstream.
 
-The app version stays identical to upstream's (for example `0.0.45`). SSH
-environments and the cloud runtime download the `t3` CLI from upstream's
-releases by app version, so a fork-specific version would break them. The
-cost: a patch shipped without a new upstream release (rerun with `rebuild`)
-replaces the same version, so installed apps do not see it as an update.
-Download that DMG by hand.
+The app's update feed points at this repository, so installed fork builds
+offer every new release through the normal in-app update button.
+
+SSH environments run upstream's matching CLI release, so the desktop strips
+the `-fork.<n>` suffix when choosing it. Upstream's other CLI paths (the
+standalone `t3` service, cloud self-updates, `t3 update`) are not supported.
 
 Upstream's own workflows target its runners and secrets, so the sync job
 disables every workflow except this one.
@@ -56,8 +58,8 @@ git switch patched
 git push origin patched
 ```
 
-Then run **Fork release** from the Actions tab with `rebuild` checked to
-publish it before the next upstream release.
+Then run **Fork release** from the Actions tab, or
+`gh workflow run fork-release.yml -R adamjhc/t3code`.
 
 ## When a rebase fails
 

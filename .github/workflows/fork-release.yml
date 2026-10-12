@@ -1,26 +1,16 @@
 name: Fork release
 
-# Rebuilds this fork whenever pingdotgg/t3code publishes a new stable release:
-# rebases the `patched` branch onto the upstream tag, builds a signed and
-# notarized macOS arm64 app, and publishes it as `fork-<tag>`. The app's update
-# feed points at this repository, so installs update from these releases.
-# Nightly and preview releases are ignored. See FORK.md.
+# Rebases the `patched` branch onto upstream's latest stable release, builds a
+# signed and notarized macOS arm64 app, and publishes it as v<upstream>-fork.<n>.
+# The schedule releases once per new upstream stable release (nightlies and
+# previews are ignored); a manual run always releases the next fork number.
+# The app's update feed points at this repository. See FORK.md.
 
 on:
   schedule:
     # Avoid minute zero, when GitHub scheduled jobs are busiest.
     - cron: "23 * * * *"
   workflow_dispatch:
-    inputs:
-      upstream_tag:
-        description: "Upstream stable tag to build (for example v0.0.45). Defaults to upstream's latest stable release."
-        required: false
-        type: string
-      rebuild:
-        description: "Replace the fork release if it already exists (for shipping a new patch on the same upstream version)."
-        required: false
-        default: false
-        type: boolean
 
 concurrency:
   group: fork-release
@@ -50,32 +40,31 @@ jobs:
       version: ${{ steps.resolve.outputs.version }}
       sha: ${{ steps.rebase.outputs.sha }}
     steps:
-      - name: Resolve upstream release
+      - name: Resolve versions
         id: resolve
         env:
           GH_TOKEN: ${{ github.token }}
-          INPUT_TAG: ${{ inputs.upstream_tag }}
-          REBUILD: ${{ inputs.rebuild }}
         run: |
           set -euo pipefail
           # releases/latest never returns a prerelease, so nightlies and previews are skipped.
-          tag="${INPUT_TAG:-$(gh api "repos/$UPSTREAM_REPOSITORY/releases/latest" --jq .tag_name)}"
+          tag="$(gh api "repos/$UPSTREAM_REPOSITORY/releases/latest" --jq .tag_name)"
           if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::error::$tag is not a stable release tag."
             exit 1
           fi
+          upstream_version="${tag#v}"
+          last="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 200 --json tagName \
+            --jq "[.[].tagName | select(startswith(\"v$upstream_version-fork.\")) | ltrimstr(\"v$upstream_version-fork.\") | tonumber] | max // 0")"
           build=true
-          if gh release view "fork-$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            if [[ "$REBUILD" == "true" ]]; then
-              echo "fork-$tag exists; rebuilding."
-            else
-              echo "fork-$tag is already published."
-              build=false
-            fi
+          if [[ "$GITHUB_EVENT_NAME" == "schedule" && "$last" -gt 0 ]]; then
+            echo "$tag already has a fork release."
+            build=false
           fi
+          version="$upstream_version-fork.$((last + 1))"
+          echo "Upstream $tag; next fork version $version."
           {
             echo "tag=$tag"
-            echo "version=${tag#v}"
+            echo "version=$version"
             echo "build=$build"
           } >> "$GITHUB_OUTPUT"
 
@@ -323,7 +312,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          REBUILD: ${{ inputs.rebuild }}
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -332,19 +320,12 @@ jobs:
             echo "::error::release/latest-mac.yml is missing, so installs could not update to this build."
             exit 1
           fi
-          release="fork-$TAG"
-          if gh release view "$release" >/dev/null 2>&1; then
-            if [[ "$REBUILD" != "true" ]]; then
-              echo "::error::$release already exists."
-              exit 1
-            fi
-            gh release delete "$release" --yes --cleanup-tag
-          fi
-          notes="$(printf 'T3 Code %s with the patches on the [`%s`](%s/%s/tree/%s) branch at %s.\n\nUpstream release notes: https://github.com/%s/releases/tag/%s\n' \
-            "$VERSION" "$PATCH_BRANCH" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$PATCH_BRANCH" "$SHA" "$UPSTREAM_REPOSITORY" "$TAG")"
-          gh release create "$release" \
+          notes="$(printf 'Upstream %s with the patches on the [`%s`](%s/%s/tree/%s) branch at %s.\n\nUpstream release notes: https://github.com/%s/releases/tag/%s\n' \
+            "$TAG" "$PATCH_BRANCH" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$PATCH_BRANCH" "$SHA" "$UPSTREAM_REPOSITORY" "$TAG")"
+          # Not a GitHub prerelease: the app's stable channel follows releases/latest.
+          gh release create "v$VERSION" \
             --target "$SHA" \
-            --title "T3 Code $VERSION (fork)" \
+            --title "T3 Code $VERSION" \
             --notes "$notes" \
             --latest \
             "${assets[@]}"
