@@ -98,7 +98,8 @@ const resolveDesktopSshCliRunner = (
       nodeEngineRange: serverPackageJson.engines.node,
     };
   }
-  return { archiveVersion: environment.appVersion };
+  // Fork: builds are versioned <upstream>-fork.<n>, but the archive comes from upstream.
+  return { archiveVersion: environment.appVersion.replace(/-fork\.\d+$/u, "") };
 };
 
 const desktopSshEnvironmentLayer = Layer.unwrap(
