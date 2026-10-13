@@ -20,6 +20,7 @@ import {
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
 import { stackedThreadToast, toastManager } from "../ui/toast";
+import { useSettingsScope } from "./SettingsScopeContext";
 
 /**
  * Fork: points a project at another folder, for example after it was moved
@@ -40,6 +41,7 @@ export function ChangeProjectFolderButton({
   const [folder, setFolder] = useState(member.workspaceRoot);
   const [saving, setSaving] = useState(false);
   const updateProject = useAtomCommand(projectEnvironment.update, { reportFailure: false });
+  const { selectScope } = useSettingsScope();
 
   const save = async () => {
     const workspaceRoot = folder.trim();
@@ -72,6 +74,9 @@ export function ChangeProjectFolderButton({
       description: workspaceRoot,
     });
     setOpen(false);
+    // A project without a Git remote is keyed by its path, so the page's
+    // selection no longer matches it. The list shows it under the new folder.
+    selectScope({});
   };
 
   return (

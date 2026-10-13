@@ -492,6 +492,13 @@ function ProjectDetail({
               </div>
             }
           />
+          {hasMultipleCheckouts ? null : (
+            <SettingsRow
+              title="Folder"
+              description={representative.workspaceRoot}
+              control={<ChangeProjectFolderButton member={representative} />}
+            />
+          )}
         </SettingsSection>
         <ProjectDefaultsSettings category="project" />
         <ProjectActionsSettings />
